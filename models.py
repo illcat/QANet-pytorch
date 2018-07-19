@@ -56,7 +56,7 @@ class DepthwiseSeparableConv(nn.Module):
 
 
 class Highway(nn.Module):
-    def __init__(self, layer_num: int, size=D):
+    def __init__(self, layer_num: int, size: int):
         super().__init__()
         self.n = layer_num
         self.linear = nn.ModuleList([nn.Linear(size, size) for _ in range(self.n)])
@@ -116,9 +116,8 @@ class SelfAttention(nn.Module):
 class Embedding(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv2d = DepthwiseSeparableConv(Dchar, D, 5, dim=2, bias=True)
-        self.conv1d = DepthwiseSeparableConv(Dword + D, D, 5, bias=True)
-        self.high = Highway(2)
+        self.conv2d = DepthwiseSeparableConv(Dchar, Dchar, 5, dim=2, bias=True)
+        self.high = Highway(2, Dword+Dchar)
 
     def forward(self, ch_emb, wd_emb):
         ch_emb = ch_emb.permute(0, 3, 1, 2)
@@ -130,7 +129,6 @@ class Embedding(nn.Module):
         wd_emb = F.dropout(wd_emb, p=dropout, training=self.training)
         wd_emb = wd_emb.transpose(1, 2)
         emb = torch.cat([ch_emb, wd_emb], dim=1)
-        emb = self.conv1d(emb)
         emb = self.high(emb)
         return emb
 
@@ -231,6 +229,8 @@ class QANet(nn.Module):
         self.char_emb = nn.Embedding.from_pretrained(torch.Tensor(char_mat), freeze=config.pretrained_char)
         self.word_emb = nn.Embedding.from_pretrained(torch.Tensor(word_mat))
         self.emb = Embedding()
+        self.context_conv = DepthwiseSeparableConv(Dword+Dchar,D, 5)
+        self.question_conv = DepthwiseSeparableConv(Dword+Dchar,D, 5)
         self.c_emb_enc = EncoderBlock(conv_num=4, ch_num=D, k=7, length=Lc)
         self.q_emb_enc = EncoderBlock(conv_num=4, ch_num=D, k=7, length=Lq)
         self.cq_att = CQAttention()
@@ -245,8 +245,11 @@ class QANet(nn.Module):
         Cw, Cc = self.word_emb(Cwid), self.char_emb(Ccid)
         Qw, Qc = self.word_emb(Qwid), self.char_emb(Qcid)
         C, Q = self.emb(Cc, Cw), self.emb(Qc, Qw)
+        C = self.context_conv(C)  
+        Q = self.question_conv(Q)  
         Ce = self.c_emb_enc(C, cmask)
         Qe = self.q_emb_enc(Q, qmask)
+        
         X = self.cq_att(Ce, Qe, cmask, qmask)
         M1 = self.cq_resizer(X)
         for enc in self.model_enc_blks: M1 = enc(M1, cmask)
