@@ -38,7 +38,7 @@ class PosEncoder(nn.Module):
 
 
 class DepthwiseSeparableConv(nn.Module):
-    def __init__(self, in_ch, out_ch, k, dim=1, bias=False):
+    def __init__(self, in_ch, out_ch, k, dim=1, bias=True):
         super().__init__()
         if dim == 1:
             self.depthwise_conv = nn.Conv1d(in_channels=in_ch, out_channels=in_ch, kernel_size=k, groups=in_ch,
@@ -50,6 +50,10 @@ class DepthwiseSeparableConv(nn.Module):
             self.pointwise_conv = nn.Conv2d(in_channels=in_ch, out_channels=out_ch, kernel_size=1, padding=0, bias=bias)
         else:
             raise Exception("Wrong dimension for Depthwise Separable Convolution!")
+        nn.init.kaiming_normal_(self.depthwise_conv.weight)
+        nn.init.constant_(self.depthwise_conv.bias, 0.0)
+        nn.init.kaiming_normal_(self.depthwise_conv.weight)
+        nn.init.constant_(self.pointwise_conv.bias, 0.0)
 
     def forward(self, x):
         return self.pointwise_conv(self.depthwise_conv(x))
@@ -116,7 +120,7 @@ class SelfAttention(nn.Module):
 class Embedding(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv2d = DepthwiseSeparableConv(Dchar, Dchar, 5, dim=2, bias=True)
+        self.conv2d = DepthwiseSeparableConv(Dchar, Dchar, 5, dim=2)
         self.high = Highway(2, Dword+Dchar)
 
     def forward(self, ch_emb, wd_emb):
