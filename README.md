@@ -40,13 +40,13 @@ config.py: configurations.
 ## TODO
 
 - [x] Reduce memory usage
-- [ ] Improve converging speed (to reach 60 F1 scores in 1000 iterations)
+- [ ] **Improve converging speed (to reach 60 F1 scores in 1000 iterations)**
 - [ ] Reach state-of-art scroes of the original paper
 - [ ] Performance analysis
 - [ ] Test on SQuAD 2.0
 
 ## Contributors
-1. [InitialBug](https://github.com/InitialBug): found two bugs: (1). positional encodings require gradients; (2). wrong weight sharing among encoders.
+1. [InitialBug](https://github.com/InitialBug): found two bugs: (1) positional encodings require gradients; (2) wrong weight sharing among encoders.
 2. [linthieda](https://github.com/linthieda): fixed one issue about dependencies and offered computing resources.
 3. [BangLiu](https://github.com/BangLiu): tested the model.
-4. [wlhgtc](https://github.com/wlhgtc): improved the calculation of Context-Question Attention.
+4. [wlhgtc](https://github.com/wlhgtc): (1) improved the calculation of Context-Question Attention; (2) fixed a bug that is compacting embeddings before highway nets.
