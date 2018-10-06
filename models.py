@@ -29,7 +29,7 @@ class PosEncoder(nn.Module):
         freqs = torch.Tensor(
             [10000 ** (-i / D) if i % 2 == 0 else -10000 ** ((1 - i) / D) for i in range(D)]).unsqueeze(dim=1)
         phases = torch.Tensor([0 if i % 2 == 0 else math.pi / 2 for i in range(D)]).unsqueeze(dim=1)
-        pos = torch.arange(length).repeat(D, 1)
+        pos = torch.arange(length).repeat(D, 1).to(torch.float)
         self.pos_encoding = nn.Parameter(torch.sin(torch.add(torch.mul(pos, freqs), phases)), requires_grad=False)
 
     def forward(self, x):
@@ -69,7 +69,7 @@ class Highway(nn.Module):
     def forward(self, x):
         x = x.transpose(1, 2)
         for i in range(self.n):
-            gate = F.sigmoid(self.gate[i](x))
+            gate = torch.sigmoid(self.gate[i](x))
             nonlinear = F.relu(self.linear[i](x))
             x = gate * nonlinear + (1 - gate) * x
         x = x.transpose(1, 2)
