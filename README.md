@@ -1,5 +1,9 @@
 # QANet-pytorch
 
+## NOTICE
+
+I'm very busy these months. I'll return to this repo in about 10 days.
+
 ## Introduction
 
 An implementation of [QANet](https://arxiv.org/pdf/1804.09541.pdf) with PyTorch. 
