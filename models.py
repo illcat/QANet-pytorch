@@ -8,7 +8,6 @@ D = config.connector_dim
 Nh = config.num_heads
 Dword = config.glove_dim
 Dchar = config.char_dim
-batch_size = config.batch_size
 dropout = config.dropout
 dropout_char = config.dropout_char
 
@@ -26,30 +25,23 @@ def mask_logits(target, mask):
 class PosEncoder(nn.Module):
     def __init__(self, length):
         super().__init__()
-        freqs = torch.Tensor(
-            [10000 ** (-i / D) if i % 2 == 0 else -10000 ** ((1 - i) / D) for i in range(D)]).unsqueeze(dim=1)
-        phases = torch.Tensor([0 if i % 2 == 0 else math.pi / 2 for i in range(D)]).unsqueeze(dim=1)
-        pos = torch.arange(length).repeat(D, 1).to(torch.float)
-        self.pos_encoding = nn.Parameter(torch.sin(torch.add(torch.mul(pos, freqs), phases)), requires_grad=False)
+        self.positional_embedding = nn.Embedding(length, D)
+        self.register_buffer('pos', torch.arange(0, length))
 
     def forward(self, x):
-        x = x + self.pos_encoding
+        size = x.size()
+        positions = self.pos[:size[2]].unsqueeze(0).repeat(size[0], 1)
+        x = x + self.positional_embedding(positions).transpose(1, 2)
         return x
 
 
 class DepthwiseSeparableConv(nn.Module):
-    def __init__(self, in_ch, out_ch, k, dim=1, bias=True):
+    def __init__(self, in_ch, out_ch, k, bias=True):
         super().__init__()
-        if dim == 1:
-            self.depthwise_conv = nn.Conv1d(in_channels=in_ch, out_channels=in_ch, kernel_size=k, groups=in_ch,
-                                            padding=k // 2, bias=bias)
-            self.pointwise_conv = nn.Conv1d(in_channels=in_ch, out_channels=out_ch, kernel_size=1, padding=0, bias=bias)
-        elif dim == 2:
-            self.depthwise_conv = nn.Conv2d(in_channels=in_ch, out_channels=in_ch, kernel_size=k, groups=in_ch,
-                                            padding=k // 2, bias=bias)
-            self.pointwise_conv = nn.Conv2d(in_channels=in_ch, out_channels=out_ch, kernel_size=1, padding=0, bias=bias)
-        else:
-            raise Exception("Wrong dimension for Depthwise Separable Convolution!")
+        self.depthwise_conv = nn.Conv1d(in_channels=in_ch, out_channels=in_ch,  kernel_size=k,
+                                        groups=in_ch, padding=k//2, bias=bias)
+        self.pointwise_conv = nn.Conv1d(in_channels=in_ch, out_channels=out_ch, kernel_size=1,
+                                        padding=0, bias=bias)
         nn.init.kaiming_normal_(self.depthwise_conv.weight)
         nn.init.constant_(self.depthwise_conv.bias, 0.0)
         nn.init.kaiming_normal_(self.depthwise_conv.weight)
@@ -79,42 +71,35 @@ class Highway(nn.Module):
 class SelfAttention(nn.Module):
     def __init__(self):
         super().__init__()
-        Wo = torch.empty(D, Dv * Nh)
-        Wqs = [torch.empty(D, Dk) for _ in range(Nh)]
-        Wks = [torch.empty(D, Dk) for _ in range(Nh)]
-        Wvs = [torch.empty(D, Dv) for _ in range(Nh)]
-        nn.init.kaiming_uniform_(Wo)
-        for i in range(Nh):
-            nn.init.xavier_uniform_(Wqs[i])
-            nn.init.xavier_uniform_(Wks[i])
-            nn.init.xavier_uniform_(Wvs[i])
-        self.Wo = nn.Parameter(Wo)
-        self.Wqs = nn.ParameterList([nn.Parameter(X) for X in Wqs])
-        self.Wks = nn.ParameterList([nn.Parameter(X) for X in Wks])
-        self.Wvs = nn.ParameterList([nn.Parameter(X) for X in Wvs])
+        self.Wqs = nn.Linear(D, Dk, bias=False)
+        self.Wks = nn.Linear(D, Dk, bias=False)
+        self.Wvs = nn.Linear(D, Dv, bias=False)
+        self.Wo = nn.Linear(D, D, bias=False)
+
+        nn.init.xavier_uniform_(self.Wqs.weight)
+        nn.init.xavier_uniform_(self.Wks.weight)
+        nn.init.xavier_uniform_(self.Wvs.weight)
+        nn.init.xavier_uniform_(self.Wo.weight)
 
     def forward(self, x, mask):
-        WQs, WKs, WVs = [], [], []
         sqrt_dk_inv = 1 / math.sqrt(Dk)
         x = x.transpose(1, 2)
         hmask = mask.unsqueeze(1)
         vmask = mask.unsqueeze(2)
-        for i in range(Nh):
-            WQs.append(torch.matmul(x, self.Wqs[i]))
-            WKs.append(torch.matmul(x, self.Wks[i]))
-            WVs.append(torch.matmul(x, self.Wvs[i]))
-        heads = []
-        for i in range(Nh):
-            out = torch.bmm(WQs[i], WKs[i].transpose(1, 2))
-            out = torch.mul(out, sqrt_dk_inv)
-            # not sure... I think `dim` should be 2 since it weighted each column of `WVs[i]`
-            out = mask_logits(out, hmask)
-            out = F.softmax(out, dim=2) * vmask
-            headi = torch.bmm(out, WVs[i])
-            heads.append(headi)
-        head = torch.cat(heads, dim=2)
-        out = torch.matmul(head, self.Wo)
-        return out.transpose(1, 2)
+
+        size = x.size()
+        WQs = self.Wqs(x).view(size[0], size[1], Nh, Dk).permute(0, 2, 1, 3)
+        WKs = self.Wqs(x).view(size[0], size[1], Nh, Dk).permute(0, 2, 1, 3)
+        WVs = self.Wqs(x).view(size[0], size[1], Nh, Dv).permute(0, 2, 1, 3)
+
+        Qk = sqrt_dk_inv * torch.matmul(WQs, WKs.transpose(2, 3))
+        Qk = mask_logits(Qk, hmask)
+        Qk = F.softmax(Qk, dim=-1) * vmask
+        Qkv = self.Wvs(Qk)
+
+        out = Qkv.permute(0, 2, 1, 3).reshape(size[0], size[1], D)
+        out = self.Wo(out).transpose(1, 2)
+        return out
 
 
 class Embedding(nn.Module):
@@ -244,8 +229,8 @@ class QANet(nn.Module):
         self.out = Pointer()
 
     def forward(self, Cwid, Ccid, Qwid, Qcid):
-        cmask = (torch.zeros_like(Cwid) != Cwid).float()
-        qmask = (torch.zeros_like(Qwid) != Qwid).float()
+        cmask = (Cwid != 0).float()
+        qmask = (Qwid != 0).float()
         Cw, Cc = self.word_emb(Cwid), self.char_emb(Ccid)
         Qw, Qc = self.word_emb(Qwid), self.char_emb(Qcid)
         C, Q = self.emb(Cc, Cw), self.emb(Qc, Qw)
