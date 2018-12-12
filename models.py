@@ -14,6 +14,7 @@ dropout_char = config.dropout_char
 Dk = D // Nh
 Dv = D // Nh
 D_cq_att = D * 4
+sqrt_dk_inv = 1 / math.sqrt(Dk)
 Lc = config.para_limit
 Lq = config.ques_limit
 
@@ -36,12 +37,18 @@ class PosEncoder(nn.Module):
 
 
 class DepthwiseSeparableConv(nn.Module):
-    def __init__(self, in_ch, out_ch, k, bias=True):
+    def __init__(self, in_ch, out_ch, k, dim=1, bias=True):
         super().__init__()
-        self.depthwise_conv = nn.Conv1d(in_channels=in_ch, out_channels=in_ch,  kernel_size=k,
-                                        groups=in_ch, padding=k//2, bias=bias)
-        self.pointwise_conv = nn.Conv1d(in_channels=in_ch, out_channels=out_ch, kernel_size=1,
-                                        padding=0, bias=bias)
+        if dim == 1:
+            self.depthwise_conv = nn.Conv1d(in_channels=in_ch, out_channels=in_ch, kernel_size=k, groups=in_ch,
+                                            padding=k // 2, bias=bias)
+            self.pointwise_conv = nn.Conv1d(in_channels=in_ch, out_channels=out_ch, kernel_size=1, padding=0, bias=bias)
+        elif dim == 2:
+            self.depthwise_conv = nn.Conv2d(in_channels=in_ch, out_channels=in_ch, kernel_size=k, groups=in_ch,
+                                            padding=k // 2, bias=bias)
+            self.pointwise_conv = nn.Conv2d(in_channels=in_ch, out_channels=out_ch, kernel_size=1, padding=0, bias=bias)
+        else:
+            raise Exception("Wrong dimension for Depthwise Separable Convolution!")
         nn.init.kaiming_normal_(self.depthwise_conv.weight)
         nn.init.constant_(self.depthwise_conv.bias, 0.0)
         nn.init.kaiming_normal_(self.depthwise_conv.weight)
@@ -64,16 +71,15 @@ class Highway(nn.Module):
             gate = torch.sigmoid(self.gate[i](x))
             nonlinear = F.relu(self.linear[i](x))
             x = gate * nonlinear + (1 - gate) * x
-        x = x.transpose(1, 2)
-        return x
+        return x.transpose(1, 2)
 
 
 class SelfAttention(nn.Module):
     def __init__(self):
         super().__init__()
-        self.Wqs = nn.Linear(D, Dk, bias=False)
-        self.Wks = nn.Linear(D, Dk, bias=False)
-        self.Wvs = nn.Linear(D, Dv, bias=False)
+        self.Wqs = nn.Linear(D, D, bias=False)
+        self.Wks = nn.Linear(D, D, bias=False)
+        self.Wvs = nn.Linear(D, D, bias=False)
         self.Wo = nn.Linear(D, D, bias=False)
 
         nn.init.xavier_uniform_(self.Wqs.weight)
@@ -82,24 +88,20 @@ class SelfAttention(nn.Module):
         nn.init.xavier_uniform_(self.Wo.weight)
 
     def forward(self, x, mask):
-        sqrt_dk_inv = 1 / math.sqrt(Dk)
         x = x.transpose(1, 2)
-        hmask = mask.unsqueeze(1)
-        vmask = mask.unsqueeze(2)
-
         size = x.size()
-        WQs = self.Wqs(x).view(size[0], size[1], Nh, Dk).permute(0, 2, 1, 3)
-        WKs = self.Wqs(x).view(size[0], size[1], Nh, Dk).permute(0, 2, 1, 3)
-        WVs = self.Wqs(x).view(size[0], size[1], Nh, Dv).permute(0, 2, 1, 3)
+        WQs = self.Wqs(x).reshape(size[0], size[1], Nh, Dk).transpose(1, 2)
+        WKs = self.Wqs(x).reshape(size[0], size[1], Nh, Dk).transpose(1, 2)
+        WVs = self.Wqs(x).reshape(size[0], size[1], Nh, Dv).transpose(1, 2)
 
         Qk = sqrt_dk_inv * torch.matmul(WQs, WKs.transpose(2, 3))
-        Qk = mask_logits(Qk, hmask)
-        Qk = F.softmax(Qk, dim=-1) * vmask
-        Qkv = self.Wvs(Qk)
 
-        out = Qkv.permute(0, 2, 1, 3).reshape(size[0], size[1], D)
-        out = self.Wo(out).transpose(1, 2)
-        return out
+        hmask = mask.unsqueeze(1).repeat(1, Nh, 1).unsqueeze(2)
+        Qkm = F.softmax(mask_logits(Qk, hmask) * hmask.transpose(2, 3), dim=-1)
+        
+        Qkv = torch.matmul(Qkm, WVs).transpose(1, 2).reshape(size[0], size[1], D)
+        out = self.Wo(Qkv)
+        return out.transpose(1, 2)
 
 
 class Embedding(nn.Module):
